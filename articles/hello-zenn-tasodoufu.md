@@ -3,7 +3,7 @@ title: "はじめまして"
 emoji: "👋"
 type: "idea" # tech: 技術記事 / idea: アイデア
 topics: [assembly, os, security]
-published: false
+published: true
 ---
 
 はじめまして、豆腐たそです。
