@@ -1,0 +1,24 @@
+{
+  "name": "zenn-contents",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tasodoufu/zenn-contents.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/tasodoufu/zenn-contents/issues"
+  },
+  "homepage": "https://github.com/tasodoufu/zenn-contents#readme",
+  "devDependencies": {
+    "zenn-cli": "^0.5.2"
+  }
+}
