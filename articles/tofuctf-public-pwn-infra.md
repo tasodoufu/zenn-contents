@@ -3,7 +3,7 @@ title: "GitHub PagesからnetcatできるCTF基盤をどう作ったか"
 emoji: "🦙"
 type: "tech"
 topics: [ctf, docker, cloudflare, tailscale]
-published: false
+published: true
 ---
 
 こんにちは、豆腐たそです。
@@ -188,4 +188,3 @@ Tailscale Funnelで利用できる公開TCPポートには制約があります�
 カレンダーやUIはGitHub Pagesで作れます。しかし、pwnらしい`nc`体験、秘密flag、ユーザー進捗、脆弱サービスの隔離には、それぞれ別の仕組みが必要です。
 
 小さく始める場合でも、公開経路と秘密情報と隔離境界を分けて考えると、後から構成を育てやすくなりました。
-
