@@ -1,125 +1,79 @@
 ---
-title: "GitHub PagesからnetcatできるCTF基盤をどう作ったか"
-emoji: "🦙"
+title: "GitHub Pagesで配る、ローカルDocker型pwn環境の作り方"
+emoji: "🍜"
 type: "tech"
-topics: [ctf, docker, cloudflare, tailscale]
+topics: [ctf, pwn, docker, github]
 published: true
 ---
 
 こんにちは、豆腐たそです。
 
-AIアシスタントの**メギ**と一緒に、pwn専用の学習サイト「TofuCTF」を作りました。
+AIアシスタントの**メギ**と一緒に、毎日ひと口ずつpwnを学ぶサイト「TofuCTF」を作りました。
 
 https://tasodoufu.github.io/TofuCTF/
 
-フロントエンドはGitHub Pagesです。しかし、pwnではHTTPページを表示するだけでなく、次のような体験が必要です。
+フロントエンドはGitHub Pagesです。一方、pwn問題には脆弱なバイナリを実行し、`nc`で接続できる環境が必要です。
+
+以前は自宅ホスト上のサービスをraw TCPで公開していましたが、現在は方針を変えました。問題ごとのDocker環境を配布し、利用者自身のPCでlocalhost起動します。
 
 ```bash
-nc tofuctf.tailc3d416.ts.net 10000
+./run.sh
+nc 127.0.0.1 31337
 ```
 
-この記事では、静的サイト、flag判定、進捗同期、脆弱なバイナリの実行環境をどのように分離したかをまとめます。
+この記事では、静的サイトとローカルpwn環境をどう組み合わせたか、flagをどこまで隠せるのか、日次公開をどう自動化したかをまとめます。
 
 ## 全体構成
 
-現在の構成は次のとおりです。
+現在の役割分担は次のとおりです。
 
 ```text
 GitHub Pages
   ├─ 問題一覧・カレンダー
-  ├─ 問題バイナリ配布
-  └─ Submit UI
-          │ HTTPS
-          ▼
-Cloudflare Worker ── Cloudflare D1
-  ├─ Google ID tokenの検証
-  ├─ flag hashとの照合
-  └─ アカウント別Solved履歴
+  ├─ challenge.tar.gz の配布
+  ├─ flag hashのローカル照合
+  └─ ブラウザ内のSolved記録
 
-Internet
-  │ raw TCP :10000
-  ▼
-Tailscale Funnel
-  │
-  ▼
-127.0.0.1:31337
-  │
-  ▼
-専用OSユーザーのrootless Docker
-  └─ pwn challenge + /flag
+利用者のPC
+  └─ run.sh
+      └─ Docker container
+          ├─ pwn challenge
+          └─ /flag ← Docker volume
+
+Googleログイン時のみ
+  └─ Cloudflare Worker ── D1
+      └─ アカウント別Solved履歴
 ```
 
-役割を分けた理由は、GitHub Pagesへ秘密情報やサーバー処理を持たせないためです。
+GitHub Pagesは問題の案内と配布を担当します。脆弱なプログラムはGitHub上では動かさず、ダウンロード後に各利用者のDockerで実行します。
 
-## GitHub Pagesだけではflagを守れない
+## 配布物は4ファイル
 
-静的JavaScriptに正解flagを置くと、ソースやDevToolsから取得できます。ハッシュだけ置いた場合も、flagの強度や実装によってはオフラインで解析されます。
+各問題のtarには、次の4ファイルだけを入れています。
 
-最初はflagの形式だけを確認する自己申告型でしたが、最終的にはCloudflare Workerへ判定を移しました。
-
-WorkerはD1の`challenge_flags`テーブルから問題ごとのflag hashを取得し、送信されたflagのSHA-256と比較します。公開リポジトリに保存するのはランダムな128-bit flagのハッシュだけです。
-
-概念的には次の処理です。
-
-```js
-const challenge = await env.DB
-  .prepare("SELECT flag_hash FROM challenge_flags WHERE challenge_id = ?")
-  .bind(challengeId)
-  .first();
-
-const submittedHash = await sha256Hex(flag.trim());
-const correct = safeEqual(submittedHash, challenge.flag_hash);
+```text
+challenge-name/
+├─ challenge-name
+├─ Dockerfile
+├─ README.txt
+└─ run.sh
 ```
 
-flag本体はpwnサーバーの専用領域にだけ置きます。
-
-## ログインを必須にしない
-
-最初はGoogleアカウントごとに異なるflagを生成していました。この方式では起動トークンが必要になり、問題を始めるまでの手順が増えました。
-
-学習サイトでは、不正防止より参加しやすさを優先したいと考え、問題ごとの固定flagへ変更しました。
-
-- 未ログイン：正誤判定できる。Solvedは`localStorage`へ保存
-- Googleログイン済み：正解時にD1へSolvedを保存
-- 同じGoogleアカウント：別端末でも履歴を同期
-
-ログインは進捗同期のためのオプションであり、問題を解くための入口にはしていません。
-
-## Cloudflareだけでraw TCPは難しかった
-
-Cloudflare WorkersにはTCP Socket APIがありますが、これはWorkerから外部へ接続するためのものです。通常のWorkerを`nc host port`の待受サーバーにはできません。
-
-Cloudflare Containersも候補でしたが、Worker経由のHTTPを中心にした構成です。任意TCPを公開するCloudflare Spectrumは、カスタムTCPの場合Enterprise向けです。
-
-そこで、サーバーで動くpwnサービスをTailscale Funnelのraw TCP転送で公開しました。
+操作用シェルは`run.sh`一本です。
 
 ```bash
-tailscale funnel --bg --tcp=10000 tcp://127.0.0.1:31337
+./run.sh       # buildして起動
+./run.sh stop  # containerとflag volumeを削除
 ```
 
-FunnelはTailscale Serveと異なり、Tailnet外の利用者も接続できます。利用者側にTailscaleは不要です。
+以前は`entrypoint.sh`と`stop.sh`も分けていました。しかし、小さな教材で操作ファイルが増えると、読む側にも生成する側にも負担になります。socatの起動設定はDockerfileの`ENTRYPOINT`へ移し、停止処理は`run.sh stop`へ統合しました。
 
-## OpenClawと脆弱コンテナを分離する
+## localhostだけで待ち受ける
 
-pwnサービスを動かすLinuxホストには、個人用AIアシスタントのOpenClawも動いています。意図的に脆弱なプログラムとの同居は慎重に扱う必要があります。
-
-完全な分離が必要なら別VMや別マシンが第一候補です。今回は小規模な個人用環境として、次の防御を重ねました。
-
-- `tofuctf`専用OSユーザー
-- rootless Docker
-- ホスト側は`127.0.0.1`だけで待受
-- ホストディレクトリを問題コンテナへ渡さない
-- flagファイルだけをread-only mount
-- root filesystemをread-only化
-- Linux capabilitiesをすべて削除
-- `no-new-privileges`
-- メモリ、CPU、PID、ファイルディスクリプタを制限
-- コンテナ内は非rootユーザー
-
-実行オプションの中心部分は次のようになっています。
+起動時はDockerの公開ポートを`127.0.0.1`へ固定します。
 
 ```bash
-docker run --detach \
+docker run -d \
   --read-only \
   --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
   --cap-drop ALL \
@@ -129,62 +83,75 @@ docker run --detach \
   --cpus 0.5 \
   --pids-limit 64 \
   --ulimit nofile=128:128 \
-  --volume "$secret:/flag:ro" \
-  --publish 127.0.0.1:31337:31337 \
+  -p "127.0.0.1:31337:31337" \
   "$image"
 ```
 
-rootlessコンテナも完全な安全境界ではありません。カーネルやコンテナランタイムの脆弱性は影響します。本格的な公開CTFや不特定多数を対象にする場合は、使い捨てVM、gVisor、Kata Containers、別ホストなど、より強い分離が必要です。
+これでLANやインターネットへ意図せず公開することを避けられます。capability削除、read-only root filesystem、非rootユーザー、リソース制限も重ねています。
 
-## 固定flagを公開Gitへ置かない
+ただし、コンテナは完全な仮想マシンではありません。信頼できない第三者バイナリを安全に実行できるという意味ではなく、ここで扱うのは自作した学習用バイナリだけです。
 
-公開tarにDockerfileとflagを入れる構成では、当然ながら答えが見えます。また、ローカルDocker形式では利用者がコンテナ管理者なので、内部のflagを意図的に読むことを防げません。
+## ローカル配布でflagを完全には隠せない
 
-現在は公開物を次だけに絞りました。
+利用者はDockerホストの管理者です。したがって、volumeやcontainerを意図的に調べる人からflagを完全に隠すことはできません。
 
-```text
-warm-tofu/
-├─ README.txt
-└─ warm-tofu
+TofuCTFでは「競技としての厳密な不正防止」より、「うっかり答えを見ないこと」を目標にしました。
+
+flagのリテラル値は`run.sh`へ書かず、問題IDと配布バイナリのSHA-256から決定的に導出します。
+
+```bash
+binary_hash="$(sha256sum "./$slug" | awk '{print $1}')"
+flag_hex="$(printf '%s' "tofuctf-local-v1:$slug:$binary_hash" \
+  | sha256sum | cut -c1-32)"
+flag="TofuCTF{$flag_hex}"
 ```
 
-サーバー側では、初回配備時にflagを生成し、専用ユーザーからしか辿れないディレクトリへ保存します。Workerへ登録するのはSHA-256だけです。
+生成したflagはDocker volumeへ書き込み、challenge containerにはread-onlyでmountします。これなら`run.sh`を開いただけでflagそのものは見えません。ただし、生成式は公開されているため、意図的に計算すれば答えは分かります。この限界は隠さず、ローカル教材として割り切っています。
 
-## 日次問題を安全に自動化する
+## flag判定もローカル優先
 
-日次ジョブは、単に問題を生成してpushするだけでは危険です。サイトだけ更新され、サーバー配備に失敗すると遊べない問題が公開されます。
+`challenges.json`にはflag本体ではなくSHA-256を載せています。Submit時はWeb Crypto APIで入力値をhash化し、ブラウザ内で比較します。
 
-そのため、次の順序を設計しました。
+```js
+const submittedHash = await sha256Hex(flag.trim());
+const correct = submittedHash === challenge.flagHash;
+```
 
-1. 前問を読み、復習＋新要素1つの問題を生成
-2. バイナリをコンパイル
-3. 作者用exploitで意図した解法を検証
-4. 秘密情報とtar内容を検査
-5. rootless環境へ配備
-6. localhostとFunnelの両方で疎通確認
-7. exploitで公開サービスからflagを取得
-8. Workerの`/api/submit`で正解を確認
-9. すべて成功した場合だけGitHub Pagesを更新
+未ログインならSolved状態を`localStorage`へ保存します。Googleログイン済みの場合だけ、Cloudflare Workerを通してD1へ進捗を同期します。
 
-配備に失敗した場合はpushしません。自動化では「成功時に進む」だけでなく、「失敗時に不完全な状態を公開しない」ことが重要です。
+この設計では、オフラインでも問題起動とflag判定ができます。Cloudflare側に障害があっても、ローカルのSolved記録は失われません。
 
-## 現在の制約
+## 日次公開をcronで自動化する
 
-Tailscale Funnelで利用できる公開TCPポートには制約があります。現在は10000番を「今日の問題」に割り当て、過去問はカレンダーとダウンロードに残す設計です。
+日次ジョブは毎朝4時15分に起動し、5時までの公開を目標にしています。
 
-複数の過去問を同時にリモート公開するには、次の選択肢があります。
+1. `git pull --ff-only`と未コミット変更を確認
+2. 前問の復習に新要素を1つ加えた問題を生成
+3. コンパイルと作者用exploitを検証
+4. Dockerfile、run.sh、README、配布tarを作成
+5. shell、JavaScript、JSON、tar内容、flag hashを検査
+6. D1へ同期用hashを登録できる場合は登録
+7. 関連ファイルだけをcommitしてGitHubへpush
+8. GitHub Pagesのdeploy成功を確認
 
-- 1ポートのTCP dispatcherで問題を選択
-- 問題ごとの短命インスタンスを生成
-- CTF専用VMと独自TCP proxyを用意
-- KubernetesとSpawnerを導入
+途中の検証に失敗した場合はpushしません。D1同期だけが失敗した場合は、ローカル判定できるサイト公開を止めず、同期未適用として報告します。
 
-利用者が少ない段階では、今日の1問だけを安全に公開するほうが運用しやすいと判断しました。
+問題名は豆腐だけに固定せず、食べ物とpwn用語を掛け合わせます。たとえば`ROP Roll`や`Heap Hotpot`のように、学習テーマが少し伝わり、毎日の問題を覚えやすくする狙いです。
+
+## GitHub Pagesとnetcatの関係
+
+「GitHub Pagesなのにnetcat」という表現は、以前のリモート公開方式ではそのまま当てはまりました。現在は少し違います。
+
+- GitHub Pages：問題を探す、ダウンロードする、flagを判定する
+- Docker：脆弱なサービスをローカルで動かす
+- netcat：localhostの問題サービスへ接続する
+
+静的サイトがTCPサーバーになるわけではありません。Pagesは入口で、実行環境は利用者のPCです。この分離により、公開サーバーで脆弱なサービスを常時運用する必要がなくなりました。
 
 ## おわりに
 
-今回の一番の学びは、CTFサイトとCTFサーバーは別の問題だということでした。
+この構成は、本格的な競技CTFの不正防止には向きません。その代わり、サーバー費用や公開TCPの運用を抱えず、毎日のpwn学習を始めやすくできます。
 
-カレンダーやUIはGitHub Pagesで作れます。しかし、pwnらしい`nc`体験、秘密flag、ユーザー進捗、脆弱サービスの隔離には、それぞれ別の仕組みが必要です。
+TofuCTFで優先したのは、強固な採点基盤よりも「ダウンロードして、`./run.sh`を実行し、localhostへ`nc`する」という短い導線です。
 
-小さく始める場合でも、公開経路と秘密情報と隔離境界を分けて考えると、後から構成を育てやすくなりました。
+小さな個人学習環境なら、秘密を完全に守ろうとするより、どこまで守れて何を割り切るかを明確にするほうが、仕組みを長く育てやすいと感じました。
